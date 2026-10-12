@@ -1,10 +1,10 @@
-# tiny-board-is-flying-that-plane ✈️
+# tiny-board-is-flying-that-plane 
 
 > I tilt a small board in my hand, and a plane flies on my laptop screen.
 
 ![Testing Tilt Flight on my laptop: ESP32 board in my hand, the game on screen](docs/demo.jpg)
 
-I'm **Pravin**, an Electronics, AI and Web Development student in Chennai. I build things with ESP32s, sensors and a browser, and this is one of them: a **tilt-controlled flight game**. An **ESP32** reads an **MPU6050** motion sensor, streams the tilt over USB, and a web page turns it into flying.
+'m Pravin Kumar K, a second-year B.Sc. Electronics with Artificial Intelligence student in Chennai. I build things with ESP32s, sensors and a browser, and this is one of them: a **tilt-controlled flight game**. An **ESP32** reads an **MPU6050** motion sensor, streams the tilt over USB, and a web page turns it into flying.
 
 ## Why I built it
 
