@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tilt Flight</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root{--ink:#16323a;--paper:#f6f3ea;--accent:#ff6a2b}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#bfe3e0;font-family:Georgia,'Times New Roman',serif;color:var(--ink)}
+  canvas{display:block}
+  #hud{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:flex;gap:22px;padding:10px 20px;background:rgba(246,243,234,.9);border-radius:10px}
+  #hud div{text-align:center;min-width:60px}
+  #hud small{display:block;font-size:11px;opacity:.65}
+  #hud b{font-size:24px;font-variant-numeric:tabular-nums}
+  #bar{position:fixed;top:14px;right:14px;display:flex;gap:8px;align-items:center}
+  button{font:inherit;font-size:14px;padding:8px 14px;border:0;border-radius:8px;background:var(--ink);color:var(--paper);cursor:pointer}
+  button.go{background:var(--accent);color:#fff}
+  button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+  #st{font-size:13px;background:rgba(246,243,234,.9);padding:7px 10px;border-radius:8px}
+  #msg{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;background:rgba(22,50,58,.55);color:var(--paper)}
+  #msg h1{margin:0;font-size:clamp(32px,7vw,64px);font-weight:400}
+  #msg p{margin:0;max-width:46ch;line-height:1.5}
+  #guide{position:fixed;top:84px;left:50%;transform:translateX(-50%);text-align:center;background:rgba(246,243,234,.9);border-radius:10px;padding:6px 16px;min-width:150px}
+  #arr{font-size:30px;line-height:1;color:var(--accent);transition:transform .08s linear}
+  #gt{font-size:13px}
+  #tilt{position:fixed;left:14px;bottom:14px;font-size:14px;line-height:1.55;background:rgba(246,243,234,.94);padding:10px 14px;border-radius:8px;max-width:min(460px,90vw)}
+  #tilt b{display:inline-block;min-width:44px;text-align:right;font-variant-numeric:tabular-nums}
+  #tilt .raw{font:12px monospace;opacity:.7;word-break:break-all}
+  #dot{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:8px;background:#999}
+  #dot.ok{background:#1f9d55}#dot.bad{background:#d63a2f}#dot.wait{background:#e0a100}
+  .hide{display:none!important}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div><small>Score</small><b id="sc">0000</b></div>
+  <div><small>Time left</small><b id="tm">02:00</b></div>
+  <div><small>Rings</small><b id="rg">0/8</b></div>
+</div>
+<div id="guide"><div id="arr">&#9650;</div><div id="gt">--</div></div>
+<div id="tilt">
+  <div><i id="dot" class="off"></i><span id="lk">Not connected - keyboard mode</span></div>
+  <div>Roll <b id="tr">0</b>&deg; &nbsp; Pitch <b id="tp">0</b>&deg;</div>
+  <div class="raw">Raw from board: <span id="raw">-</span></div>
+</div>
+<div id="bar">
+  <button id="cal" title="Hold the board level, then press">Zero tilt</button>
+  <button id="con" class="go">Connect controller</button>
+</div>
+<div id="msg">
+  <h1 id="mh">Tilt Flight</h1>
+  <p id="mp">Tilt the board to bank and climb. Fly through the glowing rings before time runs out. No board yet? Use the arrow keys.</p>
+  <button class="go" id="go">Start flying</button>
+</div>
+
+<script>
+// ---------- config ----------
+const TOTAL=8, START_TIME=120, SPEED=38, ROLL_RANGE=40, PITCH_RANGE=30;
+const INVERT_ROLL=1, INVERT_PITCH=1;   // flip to -1 if your board is mounted the other way
+
+// ---------- input ----------
+const S={roll:0,pitch:0,zr:0,zp:0,serial:false};
+const keys={},$=id=>document.getElementById(id);
+addEventListener('keydown',e=>{keys[e.key]=1;if(e.key==='c')zero();});
+addEventListener('keyup',e=>keys[e.key]=0);
+function zero(){S.zr=S.roll;S.zp=S.pitch;}
+$('cal').onclick=zero;
+
+let port=null,rdr=null,stopReq=false,lastOk=0,openedAt=0,cnt=0,raw='';
+function link(cls,msg){$('dot').className=cls;$('lk').textContent=msg;}
+
+function onLine(l){
+  raw=l;$('raw').textContent=l.slice(0,70)||'(empty)';
+  if(l.startsWith('ERR')){link('bad','Board reports: '+l.slice(4));return;}
+  const [a,b]=l.split(',').map(parseFloat);
+  if(isNaN(a)||isNaN(b))return;                 // boot-log noise is ignored
+  S.roll=a;S.pitch=b;
+  if(!lastOk)zero();                            // auto-zero on first good sample
+  lastOk=performance.now();cnt++;
+}
+
+async function connect(){
+  if(port){stopReq=true;try{await rdr.cancel();}catch(e){}return;}
+  if(!('serial' in navigator)){link('bad','Web Serial not supported - use desktop Chrome or Edge');return;}
+  try{port=await navigator.serial.requestPort();}
+  catch(e){port=null;link('off','No port selected');return;}
+  try{await port.open({baudRate:115200});}
+  catch(e){port=null;link('bad','Cannot open port ('+e.message+'). Close pio monitor / Serial Monitor, then: sudo chmod 666 /dev/ttyUSB0');return;}
+  stopReq=false;lastOk=0;cnt=0;raw='';openedAt=performance.now();S.serial=true;
+  $('con').textContent='Disconnect';link('wait','Port open - waiting for data...');
+  const dec=new TextDecoderStream();
+  const piped=port.readable.pipeTo(dec.writable).catch(()=>{});
+  rdr=dec.readable.getReader();
+  let buf='';
+  try{
+    for(;;){
+      const {value,done}=await rdr.read();if(done)break;
+      buf+=value;let i;
+      while((i=buf.indexOf('\n'))>=0){onLine(buf.slice(0,i).trim());buf=buf.slice(i+1);}
+      if(buf.length>300)buf='';
+    }
+  }catch(e){}
+  try{await piped;}catch(e){}
+  try{await port.close();}catch(e){}
+  port=null;rdr=null;S.serial=false;$('con').textContent='Connect controller';
+  link(stopReq?'off':'bad',stopReq?'Disconnected - keyboard mode':'Connection lost (unplugged or board reset). Click Connect controller again');
+}
+$('con').onclick=connect;
+
+// self-check: runs 4x per second while a port is open
+setInterval(()=>{
+  if(!port)return;
+  const n=performance.now();
+  if(lastOk&&n-lastOk<1000){link('ok','Receiving '+cnt*4+' samples/s - controller working');cnt=0;}
+  else if(lastOk){link('bad','Data stopped - board reset or unplugged');}
+  else if(n-openedAt>3000&&!raw.startsWith('ERR')){
+    link('bad','Port open but no valid data. Press EN on the ESP32, check the sketch is flashed, baud 115200. Last line: '+(raw||'none'));
+  }
+},250);
+
+// ---------- scene ----------
+const R=new THREE.WebGLRenderer({antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));
+R.setSize(innerWidth,innerHeight);
+document.body.appendChild(R.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xd7ece6);
+scene.fog=new THREE.Fog(0xd7ece6,120,700);
+const cam=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,.1,1500);
+scene.add(new THREE.HemisphereLight(0xffffff,0x4aa6a0,.75));
+const sun=new THREE.DirectionalLight(0xfff1cc,.45);sun.position.set(50,100,30);scene.add(sun);
+
+const sea=new THREE.Mesh(new THREE.PlaneGeometry(3000,3000),new THREE.MeshLambertMaterial({color:0x2f9d98}));
+sea.rotation.x=-Math.PI/2;scene.add(sea);
+
+const hills=[];
+for(let i=0;i<40;i++){
+  const h=20+Math.random()*45;
+  const m=new THREE.Mesh(new THREE.ConeGeometry(h*.9,h,5),new THREE.MeshLambertMaterial({color:[0x7fae9a,0x9cc3a8,0xc9c58a][i%3]}));
+  const ang=Math.random()*6.283,rad=300+Math.random()*600;
+  m.position.set(Math.cos(ang)*rad,h/2-4,Math.sin(ang)*rad);
+  scene.add(m);hills.push(m);
+}
+
+// plane
+const plane=new THREE.Group();plane.rotation.order='YXZ';
+const mat=new THREE.MeshLambertMaterial({color:0xff6a2b}),dark=new THREE.MeshLambertMaterial({color:0x222222});
+const add=(g,m,x,y,z)=>{const o=new THREE.Mesh(g,m);o.position.set(x,y,z);plane.add(o);};
+add(new THREE.BoxGeometry(.7,.7,3.4),mat,0,0,0);
+add(new THREE.BoxGeometry(7,.12,1.1),mat,0,0,-.2);
+add(new THREE.BoxGeometry(2.4,.1,.7),mat,0,0,1.5);
+add(new THREE.BoxGeometry(.1,1,.7),mat,0,.5,1.5);
+add(new THREE.BoxGeometry(.15,1.2,.15),dark,0,0,-1.8);
+scene.add(plane);
+
+// ring
+const ring=new THREE.Mesh(new THREE.TorusGeometry(10,.9,14,48),new THREE.MeshBasicMaterial({color:0xffd34d}));
+scene.add(ring);
+
+// ---------- game state ----------
+let yaw=0,alt=30,score=0,rings=0,time=START_TIME,running=false;
+const pos=new THREE.Vector3(0,30,0);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function spawnRing(){
+  const a=yaw+(Math.random()-.5)*1.1,d=90+Math.random()*40;
+  ring.position.set(pos.x-Math.sin(a)*d,Math.max(12,Math.min(60,alt+(Math.random()-.5)*30)),pos.z-Math.cos(a)*d);
+  ring.lookAt(pos.x,ring.position.y,pos.z);
+}
+function reset(){
+  yaw=0;alt=30;score=0;rings=0;time=START_TIME;pos.set(0,30,0);
+  spawnRing();hud();
+}
+function hud(){
+  document.getElementById('sc').textContent=String(score).padStart(4,'0');
+  const t=Math.ceil(time);
+  document.getElementById('tm').textContent=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');
+  document.getElementById('rg').textContent=rings+'/'+TOTAL;
+}
+function end(won){
+  running=false;
+  document.getElementById('mh').textContent=won?'All rings cleared':'Time up';
+  document.getElementById('mp').textContent='Score '+score+' with '+rings+' of '+TOTAL+' rings.';
+  document.getElementById('go').textContent='Fly again';
+  document.getElementById('msg').classList.remove('hide');
+}
+document.getElementById('go').onclick=()=>{reset();running=true;document.getElementById('msg').classList.add('hide');};
+
+// ---------- loop ----------
+let last=performance.now();
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=Math.min((now-last)/1000,.05);last=now;
+
+  if(!S.serial){
+    const tr=(keys.ArrowRight?ROLL_RANGE:0)-(keys.ArrowLeft?ROLL_RANGE:0);
+    const tp=(keys.ArrowUp?PITCH_RANGE:0)-(keys.ArrowDown?PITCH_RANGE:0);
+    S.roll+=(tr-S.roll)*Math.min(dt*5,1);S.pitch+=(tp-S.pitch)*Math.min(dt*5,1);
+    S.zr=S.zp=0;
+  }
+  const r=clamp((S.roll-S.zr)/ROLL_RANGE,-1,1)*INVERT_ROLL;
+  const p=clamp((S.pitch-S.zp)/PITCH_RANGE,-1,1)*INVERT_PITCH;
+
+  if(running){
+    yaw-=r*1.1*dt;
+    alt=clamp(alt+p*22*dt,4,90);
+    pos.x-=Math.sin(yaw)*SPEED*dt;pos.z-=Math.cos(yaw)*SPEED*dt;pos.y=alt;
+    time-=dt;
+    if(pos.distanceTo(ring.position)<11){
+      rings++;score+=125+Math.round(time);
+      if(rings>=TOTAL){hud();end(true);}else spawnRing();
+    }
+    if(time<=0){time=0;end(false);}
+    hud();
+  }
+  // guide + readout
+  const dx=ring.position.x-pos.x,dz=ring.position.z-pos.z,dy=ring.position.y-pos.y;
+  let df=Math.atan2(-dx,-dz)-yaw;df=Math.atan2(Math.sin(df),Math.cos(df));
+  document.getElementById('arr').style.transform='rotate('+(-df*57.3)+'deg)';
+  const dist=Math.round(Math.hypot(dx,dz));
+  document.getElementById('gt').textContent=dist+' m  '+(Math.abs(df)<.15?'straight ahead':df>0?'turn left':'turn right')+'  '+(dy>6?'climb':dy<-6?'dive':'level');
+  $('tr').textContent=(S.roll-S.zr).toFixed(0);
+  $('tp').textContent=(S.pitch-S.zp).toFixed(0);
+  for(const h of hills){const hx=h.position.x-pos.x,hz=h.position.z-pos.z;
+    if(hx*hx+hz*hz>1000*1000){const a=Math.random()*6.283,r=700+Math.random()*250;h.position.x=pos.x+Math.cos(a)*r;h.position.z=pos.z+Math.sin(a)*r;}}
+  plane.position.copy(pos);
+  plane.rotation.y=yaw;plane.rotation.x=p*.5;plane.rotation.z=-r*.9;
+  ring.rotation.z+=dt;
+
+  const back=new THREE.Vector3(Math.sin(yaw)*14,5,Math.cos(yaw)*14).add(pos);
+  cam.position.lerp(back,Math.min(dt*4,1));
+  cam.lookAt(pos.x-Math.sin(yaw)*10,pos.y,pos.z-Math.cos(yaw)*10);
+  sea.position.set(pos.x,0,pos.z);
+  R.render(scene,cam);
+}
+reset();requestAnimationFrame(loop);
+addEventListener('resize',()=>{R.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();});
+</script>
+</body>
+</html>
